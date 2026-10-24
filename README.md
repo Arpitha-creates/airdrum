@@ -1,17 +1,17 @@
 # Air Drums 🥁
 
-Play a drum kit in mid-air with your hands. A webcam watches for hand movement;
-when your hand strikes a drum zone, that drum sounds. No app install, no
-machine-learning model to download, no build step — just open the page.
+Play a drum kit in mid-air. A webcam finds your hands, and a strike — closing
+your fist or flicking down — plays the drum your hand is over. No install, no
+build step, no account.
 
-This is a **clean rewrite**: the earlier AI/gesture-classification layer is gone.
-It is plain frame-difference motion sensing plus the Web Audio API, so it is
-simple, fast and works offline once loaded.
+Hand tracking is done by [MediaPipe Hands](https://developers.google.com/mediapipe)
+running in the browser; the drum sounds are synthesised live with the Web Audio
+API. Nothing to download but the page itself (and a one-time model fetch).
 
 ## Run it
 
-Camera access needs a real origin (`https://` or `http://localhost`), so serve
-the folder rather than double-clicking the file:
+The camera needs a real origin (`https://` or `http://localhost`), so serve the
+folder rather than opening the file directly:
 
 ```bash
 # from inside this folder
@@ -19,11 +19,16 @@ python3 -m http.server 8000
 # then open http://localhost:8000
 ```
 
-Or, on GitHub, turn on **Settings → Pages** and use the published URL.
+Or turn on **Settings → Pages** on the GitHub repo and use the published URL.
 
-Click **Start camera**, allow the webcam, then move your hand over a drum.
+## How to play
 
-## The kit
+1. Press **Start** and allow the camera.
+2. Move your hand over a drum — the drum lights up under it.
+3. **Close your fist**, or **flick your hand downward**, to strike it.
+
+Both hands work at once, so you can play two drums together. No camera handy?
+Press keys **1**–**6** or click a pad.
 
 | Zone | Drum | Key |
 |------|------|-----|
@@ -34,49 +39,61 @@ Click **Start camera**, allow the webcam, then move your hand over a drum.
 | bottom-middle | Kick | `5` |
 | bottom-right | Floor tom | `6` |
 
-No camera, or just testing? Press keys **1–6**, or click a pad with the mouse.
-
 ## Controls
 
-- **Sensitivity** – how much movement counts as a hit. Too many phantom hits →
-  lower it. Missing your strikes → raise it.
+- **Sensitivity** – how fast a downward flick has to be to count as a strike.
+  Too many accidental hits → lower it; missing your strikes → raise it. Fist
+  strikes are not affected by this.
 - **Volume** – output level.
-- **Calibrate** – re-learns the "quiet" background (do this after the lighting
-  changes, or if you moved the camera). Keep your hands still for a moment.
+- **Recalibrate** – resets the strike trackers (useful if a hand gets stuck).
 
 ## How it works
 
-1. Each camera frame is drawn, mirrored, to a small 200×150 canvas and turned
-   into grayscale.
-2. The screen is split into six zones. For each zone the app measures how much
-   that zone changed since the previous frame.
-3. Every zone keeps a slowly-updating **noise floor** of what "still" looks like
-   there, so a motionless hand, camera grain or a shifting background does not
-   trigger. A hit is a spike well above that floor.
-4. To stop one strike from firing twice (in *and* out), a zone locks after it
-   fires and only re-arms once it has been still for a short moment. A refractory
-   period also caps how fast a single zone can repeat.
-5. Each hit plays a drum synthesised live with the Web Audio API (kick, snare,
-   toms and cymbals are built from oscillators + filtered noise) — nothing to
-   download.
+1. Each camera frame goes to **MediaPipe HandLandmarker**, which returns up to
+   two hands as 21 points each (normalised 0..1), plus a left/right label.
+2. `hands.js` turns those points into decisions:
+   - **Which drum** — the palm centre (average of the wrist and the four base
+     knuckles) mapped onto the 3×2 pad grid, with x mirrored to match the
+     on-screen preview.
+   - **Fist or open** — a finger counts as extended when the base→middle and
+     middle→tip segments point the same way. This is scale- and
+     rotation-invariant, so it works at any distance or hand angle.
+   - **A strike** — either the hand closing from open (≥3 fingers) to a fist
+     (≤1), or the palm moving down faster than the sensitivity threshold. A
+     short cooldown stops one strike firing twice.
+3. The hit plays a drum built from oscillators and filtered noise, and the pad
+   flashes, ripples and counts up.
+
+If the hand model can't load (offline, blocked CDN), the app falls back to
+frame-difference **motion sensing** (`motion.js`) so the kit still plays.
 
 ## Files
 
 ```
 index.html            the page and styling
-app.js                camera, rendering, hit handling, drum synthesis
-motion.js             MotionDetector — the movement-detection engine
-test/test_motion.js   unit tests for the detector (plain Node)
-test/browser_test.js  end-to-end test: serves the app, opens it in headless
-                      Chromium with a synthetic webcam, checks hits fire
+app.js                camera, MediaPipe, rendering, hit handling, drum synthesis
+hands.js              gesture logic: finger counting, palm, pad mapping, strikes
+motion.js             MotionDetector — offline motion-sensing fallback
+test/test_hands.js    unit tests for the gesture logic (plain Node)
+test/test_motion.js   unit tests for the motion fallback (plain Node)
+test/browser_test.js  end-to-end test in headless Chromium
+test/fixtures/hand.jpg  a real hand photo used by the end-to-end test
 ```
 
 ## Tests
 
 ```bash
-node test/test_motion.js      # 20 assertions, no browser needed
-node test/browser_test.js     # needs Chromium + puppeteer-core
+node test/test_hands.js      # 22 assertions — gesture + strike logic
+node test/test_motion.js     # 20 assertions — motion fallback
+node test/browser_test.js    # needs Chromium + puppeteer-core
 ```
 
-`test/browser_test.js` expects a Chromium binary; override with
-`CHROME_PATH=/path/to/chrome node test/browser_test.js`.
+`test/browser_test.js` serves the app, opens it in headless Chromium with a
+synthetic webcam, confirms MediaPipe loads, then detects a **real hand photo**
+(21 landmarks, classified as an open hand) and drives a strike through the app.
+Point it at your own browser with `CHROME_PATH=/path/to/chrome node test/browser_test.js`.
+
+## Credits
+
+Test hand photo: "Linke-hand.jpg" by MartinThoma, Wikimedia Commons, **CC0**
+(public domain).
