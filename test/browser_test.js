@@ -1,7 +1,13 @@
 /*
- * End-to-end browser smoke test for Air Drums.
+ * End-to-end browser test for Air Drums.
+ *
  * Serves the app over http://localhost, opens it in headless Chromium with a
- * synthetic webcam, and checks that the camera pipeline actually fires hits.
+ * synthetic webcam, then checks the whole hand-tracking pipeline:
+ *   1. scripts load and the app initialises
+ *   2. the pure gesture logic works inside the browser
+ *   3. MediaPipe loads and the app reports hand-tracking mode
+ *   4. a REAL hand photo is detected -> 21 landmarks -> classified as an open hand
+ *   5. feeding those real landmarks into the app as open -> fist fires a drum
  *
  * Run:  node test/browser_test.js
  */
@@ -16,7 +22,7 @@ var ROOT = path.resolve(__dirname, '..');
 var PORT = 8137;
 var CHROME = process.env.CHROME_PATH || '/usr/local/bin/chromium';
 
-var MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+var MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.jpg': 'image/jpeg', '.png': 'image/png' };
 
 function serve() {
   return new Promise(function (resolve) {
@@ -39,6 +45,16 @@ function ok(cond, msg) {
   if (cond) { pass++; console.log('  ok  - ' + msg); }
   else { fail++; console.log('  FAIL- ' + msg); }
 }
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+async function waitFor(fn, timeoutMs) {
+  var end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await fn()) return true;
+    await sleep(250);
+  }
+  return false;
+}
 
 (async function () {
   var server = await serve();
@@ -51,6 +67,7 @@ function ok(cond, msg) {
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
       '--autoplay-policy=no-user-gesture-required',
+      '--enable-unsafe-swiftshader',
       '--window-size=1000,900'
     ]
   });
@@ -59,58 +76,116 @@ function ok(cond, msg) {
   var pageErrors = [];
   var consoleErrors = [];
   page.on('pageerror', function (e) { pageErrors.push(String(e)); });
-  page.on('console', function (m) { if (m.type() === 'error') consoleErrors.push(m.text()); });
+  page.on('console', function (m) {
+    if (m.type() !== 'error') return;
+    var t = m.text();
+    // MediaPipe's wasm runtime logs INFO lines via console.error; ignore them.
+    if (/^INFO:|XNNPACK|TensorFlow Lite|Created TensorFlow/i.test(t)) return;
+    consoleErrors.push(t);
+  });
 
-  // Auto-grant camera permission.
-  var context = browser.defaultBrowserContext();
-  try { await context.overridePermissions('http://localhost:' + PORT, ['camera']); } catch (e) {}
+  try { await browser.defaultBrowserContext().overridePermissions('http://localhost:' + PORT, ['camera']); } catch (e) {}
 
   console.log('browser smoke test');
   await page.goto('http://localhost:' + PORT + '/index.html', { waitUntil: 'load' });
 
   // --- A. scripts load -------------------------------------------------
-  ok(await page.evaluate(function () { return typeof window.MotionDetector; }) === 'function',
-    'motion.js loads and exposes MotionDetector');
-  ok(await page.evaluate(function () { return !!window.__airDrums; }) === true,
-    'app.js initialises');
-  ok(await page.evaluate(function () { return !!document.getElementById('display'); }) === true,
-    'display canvas is present');
+  ok(await page.evaluate(function () { return typeof window.Hands; }) === 'object', 'hands.js loads and exposes Hands');
+  ok(await page.evaluate(function () { return typeof window.MotionDetector; }) === 'function', 'motion.js loads (offline fallback)');
+  ok(await page.evaluate(function () { return !!window.__airDrums; }) === true, 'app.js initialises');
+  ok(await page.evaluate(function () { return !!document.getElementById('display'); }) === true, 'display canvas is present');
 
-  // --- B. the detector runs inside the browser too ---------------------
-  var detHit = await page.evaluate(function () {
-    var W = 90, H = 60;
-    function frame(bright) { var f = new Float32Array(W * H); f.fill(50); if (bright) { for (var y = 30; y < 60; y++) for (var x = 0; x < 30; x++) f[y * W + x] = 200; } return f; }
-    var d = new MotionDetector({ cols: 3, rows: 2, threshold: 14 });
-    var a = frame(false), b = frame(true);
-    d.process(a, W, H, 0);
-    d.process(a, W, H, 16);
-    var hits = d.process(b, W, H, 32);
-    return hits.length === 1 && hits[0].cell === 3;
+  // --- B. gesture logic works in the browser ---------------------------
+  var logic = await page.evaluate(function () {
+    function fist() {
+      var lm = new Array(21);
+      for (var i = 0; i < 21; i++) lm[i] = { x: 0.5, y: 0.9 };
+      lm[0] = { x: 0.5, y: 0.92 };
+      var mcps = [5, 9, 13, 17], pips = [6, 10, 14, 18], tips = [8, 12, 16, 20];
+      for (var k = 0; k < 4; k++) {
+        lm[mcps[k]] = { x: 0.42 + k * 0.06, y: 0.66 };
+        lm[pips[k]] = { x: 0.42 + k * 0.06, y: 0.54 };
+        lm[tips[k]] = { x: 0.44 + k * 0.06, y: 0.62 }; // curled back
+      }
+      return lm;
+    }
+    var open = fist(); open[8] = { x: 0.42, y: 0.38 }; open[12] = { x: 0.48, y: 0.32 };
+    open[16] = { x: 0.54, y: 0.37 }; open[20] = { x: 0.60, y: 0.46 };
+    return { openExt: window.Hands.extendedCount(open), fistExt: window.Hands.extendedCount(fist()) };
   });
-  ok(detHit === true, 'detector fires the correct zone in-browser');
+  ok(logic.openExt === 4, 'open hand -> 4 extended in-browser');
+  ok(logic.fistExt === 0, 'fist -> 0 extended in-browser');
 
-  // --- C. keyboard triggers the audio engine without errors ------------
+  // --- C. start camera + hand tracking ---------------------------------
   await page.evaluate(function () { document.getElementById('startBtn').click(); });
-  await new Promise(function (r) { setTimeout(r, 1200); });
-  await page.keyboard.press('4');
-  await new Promise(function (r) { setTimeout(r, 200); });
-  ok(pageErrors.length === 0, 'no page errors after starting audio + key press');
+  var becameHand = await waitFor(async function () {
+    return await page.evaluate(function () { return window.__airDrums.mode() === 'hand'; });
+  }, 45000);
+  var modeNow = await page.evaluate(function () { return window.__airDrums.mode(); });
+  ok(becameHand, 'MediaPipe loads and app enters hand-tracking mode (mode: "' + modeNow + '")');
+  ok(pageErrors.length === 0, 'no page errors during startup');
 
-  // --- D. camera comes up ---------------------------------------------
-  var status = await page.$eval('#status', function (el) { return el.textContent; });
-  ok(/camera live/i.test(status), 'camera starts and reports live (status: "' + status + '")');
-  ok(await page.evaluate(function () { return document.getElementById('cam').readyState; }) >= 2,
-    'video element is actually streaming frames');
+  if (!becameHand) {
+    console.log('  (hand model unavailable — skipping live-hand checks)');
+  } else {
+    // --- D. detect a REAL hand photo ----------------------------------
+    var det = await page.evaluate(async function () {
+      var BUNDLE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+      var WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+      var MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+      var mod = await import(BUNDLE);
+      var fileset = await mod.FilesetResolver.forVisionTasks(WASM);
+      var lm = await mod.HandLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: MODEL, delegate: 'CPU' },
+        numHands: 1, runningMode: 'IMAGE'
+      });
+      var img = new Image();
+      img.src = '/test/fixtures/hand.jpg';
+      await img.decode();
+      var res = lm.detect(img);
+      if (!res.landmarks.length) return { hands: 0 };
+      return { hands: res.landmarks.length, count: res.landmarks[0].length, ext: window.Hands.extendedCount(res.landmarks[0]) };
+    });
+    ok(det.hands === 1, 'MediaPipe detects exactly one hand in the photo');
+    ok(det.count === 21, 'the hand has 21 landmarks');
+    ok(det.ext >= 3, 'real open hand classified as extended (fingers extended: ' + det.ext + ')');
 
-  // --- E. the camera motion actually produces hits ---------------------
-  var before = await page.evaluate(function () {
-    return Array.prototype.reduce.call(window.__airDrums.counts, function (a, b) { return a + b; }, 0);
-  });
-  await new Promise(function (r) { setTimeout(r, 2500); });
-  var after = await page.evaluate(function () {
-    return Array.prototype.reduce.call(window.__airDrums.counts, function (a, b) { return a + b; }, 0);
-  });
-  ok(after > before, 'moving image in front of the camera fires hits (total went ' + before + ' -> ' + after + ')');
+    // --- E. real landmarks drive a strike end-to-end -------------------
+    var flow = await page.evaluate(async function () {
+      var BUNDLE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+      var WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+      var MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+      var mod = await import(BUNDLE);
+      var fileset = await mod.FilesetResolver.forVisionTasks(WASM);
+      var lm = await mod.HandLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: MODEL, delegate: 'CPU' },
+        numHands: 1, runningMode: 'IMAGE'
+      });
+      var img = new Image(); img.src = '/test/fixtures/hand.jpg'; await img.decode();
+      var real = lm.detect(img).landmarks[0];
+
+      function total() { return Array.prototype.reduce.call(window.__airDrums.counts, function (a, b) { return a + b; }, 0); }
+
+      var t = performance.now();
+      window.__airDrums.handleResults({ landmarks: [real], handedness: [[{ categoryName: 'Test' }]] }, t);
+      var before = total();
+
+      // Simulate the same hand closing into a fist.
+      var fist = real.map(function (p) { return { x: p.x, y: p.y, z: p.z || 0 }; });
+      var wrist = real[0];
+      [[6, 8], [10, 12], [14, 16], [18, 20]].forEach(function (pair) {
+        var pip = real[pair[0]];
+        fist[pair[1]] = { x: pip.x + (wrist.x - pip.x) * 0.6, y: pip.y + (wrist.y - pip.y) * 0.6, z: 0 };
+      });
+      var fistExt = window.Hands.extendedCount(fist);
+
+      window.__airDrums.handleResults({ landmarks: [fist], handedness: [[{ categoryName: 'Test' }]] }, t + 150);
+      var after = total();
+      return { before: before, after: after, fistExt: fistExt };
+    });
+    ok(flow.fistExt <= 1, 'the simulated fist reads as closed (extended: ' + flow.fistExt + ')');
+    ok(flow.after > flow.before, 'open -> fist on real landmarks fires a drum (hits ' + flow.before + ' -> ' + flow.after + ')');
+  }
 
   // --- F. clean console ------------------------------------------------
   ok(consoleErrors.length === 0, 'no console errors' + (consoleErrors.length ? ': ' + consoleErrors.join(' | ') : ''));
