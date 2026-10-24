@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Air Drums — play drums with your hands</title>
+<style>
+  :root {
+    --bg: #05060a;
+    --ink: #e1f2ff;
+    --dim: #8fb3cc;
+    --accent: #00ffd5;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    background: radial-gradient(1200px 800px at 50% -10%, #0d1b2e 0%, var(--bg) 60%);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .app {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 22px 18px 40px;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px 22px;
+    margin-bottom: 16px;
+  }
+  h1 {
+    font-size: 26px;
+    letter-spacing: 0.5px;
+    margin: 0;
+    flex: 1 1 auto;
+  }
+  h1 span { color: var(--accent); }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 18px;
+  }
+  .controls label {
+    font-size: 13px;
+    color: var(--dim);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  input[type="range"] { width: 110px; accent-color: var(--accent); }
+  button {
+    font: inherit;
+    font-weight: 600;
+    font-size: 14px;
+    padding: 9px 16px;
+    border-radius: 10px;
+    border: 1px solid rgba(0,255,213,0.5);
+    background: rgba(0,255,213,0.12);
+    color: var(--accent);
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  button:hover:not(:disabled) { background: rgba(0,255,213,0.22); }
+  button:disabled { opacity: 0.55; cursor: default; }
+  #calibBtn {
+    border-color: rgba(140,180,220,0.4);
+    background: rgba(140,180,220,0.1);
+    color: var(--dim);
+  }
+  .stage {
+    position: relative;
+    width: 100%;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 18px 50px rgba(0,0,0,0.55);
+    background: #05060a;
+  }
+  #display {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  #cam {
+    position: absolute;
+    width: 1px; height: 1px;
+    opacity: 0;
+    pointer-events: none;
+    left: -9999px;
+  }
+  #status {
+    margin: 16px 0 6px;
+    font-size: 14px;
+    color: var(--accent);
+    min-height: 20px;
+  }
+  .hint {
+    margin: 0;
+    font-size: 13px;
+    color: var(--dim);
+    line-height: 1.6;
+  }
+  .hint b { color: var(--ink); }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Air <span>Drums</span></h1>
+      <div class="controls">
+        <button id="startBtn">Start camera</button>
+        <label>Sensitivity <input id="sens" type="range" min="0" max="100" value="72"></label>
+        <label>Volume <input id="vol" type="range" min="0" max="100" value="85"></label>
+        <button id="calibBtn">Calibrate</button>
+      </div>
+    </header>
+
+    <div class="stage">
+      <canvas id="display" width="800" height="600"></canvas>
+      <video id="cam" playsinline muted autoplay></video>
+    </div>
+
+    <p id="status">Press “Start camera”, allow webcam access, then move your hand over a drum.</p>
+    <p class="hint">
+      No camera? Press keys <b>1</b>–<b>6</b> or click a pad.
+      If it feels too jumpy, lower <b>Sensitivity</b>; if it misses your hits, raise it and press <b>Calibrate</b>.
+    </p>
+  </div>
+
+  <script src="motion.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
